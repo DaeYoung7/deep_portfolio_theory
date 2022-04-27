@@ -5,24 +5,28 @@ import matplotlib.pyplot as plt
 
 import torch
 import torch.nn as nn
-from torch.optim import Adam
+from torch.optim import Adam, lr_scheduler
 
 class MyModel(nn.Module):
-    def __init__(self, num_feature, encoded_size):
+    def __init__(self, layer, num_feature, encoded_size):
         super().__init__()
+        self.layer = layer
         self.input_shape = num_feature
         self.encoded_size = encoded_size
         self.hidden_size = 256
         self.output_shape = num_feature
 
-        # self.encoder_hl1 = nn.Linear(self.input_shape, self.hidden_size)
-        # self.encoder_hl2 = nn.Linear(self.hidden_size, self.encoded_size)
-        self.encoder_hl1 = nn.LSTM(self.input_shape, self.encoded_size, 1)
+        self.encoder_hl1 = nn.Linear(self.input_shape, self.hidden_size)
+        self.encoder_hl2 = nn.Linear(self.hidden_size, self.encoded_size)
+        self.encoder_lstm = nn.LSTM(self.input_shape, self.encoded_size, 1)
         self.decoder = nn.Linear(self.encoded_size, self.output_shape)
     def forward(self, inputs):
-        x, _ = self.encoder_hl1(inputs)
-        x = torch.squeeze(x[:,-1,:], dim=1)
-        # x = torch.relu(self.encoder_hl2(x))
+        if self.layer == 'linear':
+            x = torch.relu(self.encoder_hl1(inputs))
+            x = torch.relu(self.encoder_hl2(x))
+        else:
+            x, _ = self.encoder_lstm(inputs)
+            x = torch.squeeze(x[:,-1,:], dim=1)
         output = self.decoder(torch.relu(x))
         return output, x
 
@@ -31,25 +35,31 @@ split = int((len(data)-252) * 0.8)
 seq_data = []
 y = []
 i = 252
-while i < len(data):
-    seq_data.append(data[i-252:i].values)
-    y.append(data.iloc[i-1].values)
-    i += 1
-# train_data = torch.tensor(data[:split].values, dtype=torch.float32)
-# test_data = torch.tensor(data[split:].values, dtype=torch.float32)
-
-train_data = torch.tensor(np.array(seq_data[:split], dtype=np.float32))
-train_label = torch.tensor(np.array(y[:split], dtype=np.float32))
-test_data = torch.tensor(np.array(seq_data[split:], dtype=np.float32))
-test_label = torch.tensor(np.array(y[split:], dtype=np.float32))
+layer_type = 'linear'
+if layer_type == 'lstm':
+    while i < len(data):
+        seq_data.append(data[i-252:i].values)
+        y.append(data.iloc[i-1].values)
+        i += 1
+    train_data = torch.tensor(np.array(seq_data[:split], dtype=np.float32))
+    train_label = torch.tensor(np.array(y[:split], dtype=np.float32))
+    test_data = torch.tensor(np.array(seq_data[split:], dtype=np.float32))
+    test_label = torch.tensor(np.array(y[split:], dtype=np.float32))
+else:
+    train_data = torch.tensor(data[:split].values, dtype=torch.float32)
+    train_label = torch.tensor(data[:split].values, dtype=torch.float32)
+    test_data = torch.tensor(data[split:].values, dtype=torch.float32)
+    test_label = torch.tensor(data[split:].values, dtype=torch.float32)
 
 num_feature = len(data.columns)
-encoded_size = num_feature // 10 + 1
-net = MyModel(num_feature, encoded_size)
-optimizer = Adam(net.parameters(), lr=0.001, weight_decay=1e-5)
+encoded_size = num_feature // 3 + 2
+print(f'encoded_size : {encoded_size}')
+net = MyModel(layer_type, num_feature, encoded_size)
+optimizer = Adam(net.parameters(), lr=0.01, weight_decay=1e-5)
+scheduler = lr_scheduler.StepLR(optimizer, step_size=2500, gamma=0.1)
 loss_fn = nn.MSELoss()
 
-epochs = 5000
+epochs = 10000
 tlosses = []
 vlosses = []
 for epoch in range(epochs):
@@ -66,8 +76,9 @@ for epoch in range(epochs):
 
     tlosses.append(tloss)
     vlosses.append(vloss)
-
-    print(f'{epoch}  {tloss}  {vloss}')
+    scheduler.step()
+    if (epoch+1) % 10 == 0:
+        print(f'{epoch+1}  {tloss}  {vloss}')
 plt.plot(tlosses, label='train')
 plt.plot(vlosses, label='test')
 plt.legend()
@@ -79,19 +90,12 @@ total_data = torch.tensor(data.values, dtype=torch.float32)
 output, encoded_data = net(total_data)
 output = output.detach().numpy()
 
-score = np.linalg.norm(output - data.values, axis=0)
-score = pd.Series(score, index=data.columns).sort_values()
-# best_idx, worst_idx = list(data.columns).index(score.index[0]), list(data.columns).index(score.index[-1])
-# plt.plot(data[score.index[0]], label='best_original')
-# plt.plot(data.index, output[:,best_idx], label='best_simul')
-# plt.legend()
-# plt.show()
-#
-# plt.plot(data[score.index[-1]], label='worst_original')
-# plt.plot(data.index, output[:,worst_idx], label='worst_simul')
-# plt.show()
 for i in range(len(data.columns)):
     plt.plot(data[data.columns[i]][split:], label='original')
     plt.plot(data.index[split:], output[split:,i], label='simul')
     plt.legend()
     plt.show()
+
+output_df = pd.DataFrame(output)
+output_df.index = data.index
+output_df.to_csv('K200_deep_factor.csv')
