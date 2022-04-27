@@ -98,6 +98,6 @@ for i in range(len(data.columns)):
     plt.legend()
     plt.show()
 
-output_df = pd.DataFrame(encoded_data)
+output_df = pd.DataFrame(encoded_data.detach().numpy())
 output_df.index = data.index
 output_df.to_csv('K200_deep_factor.csv')
